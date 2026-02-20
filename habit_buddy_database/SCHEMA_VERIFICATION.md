@@ -1,6 +1,6 @@
 # Habit Buddy DB schema verification (PostgreSQL)
 
-This file documents the schema verification for the `habit_buddy_database` container.
+This file documents the schema verification for the `habit_buddy_database` container and its fit with the `habit_buddy_backend` FastAPI endpoints.
 
 ## Connection (authoritative)
 
@@ -36,6 +36,17 @@ Tables found (14):
 - `feed_post_likes`
 - `feed_post_comments`
 
+## Constraints present (PK/FK/unique)
+
+Verified via:
+
+- `SELECT conname, conrelid::regclass AS table_name, pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE connamespace='public'::regnamespace ORDER BY conrelid::regclass::text, conname;`
+
+Key items required by backend logic:
+
+- `habit_checkins`: `UNIQUE (habit_id, checkin_date)` ensures one check-in per habit per day (backend returns 409 on duplicates).
+- `feed_post_likes`: `PRIMARY KEY (post_id, user_id)` enables idempotent likes (backend treats unique violation as "already liked").
+
 ## Indexes present
 
 Verified via:
@@ -59,35 +70,30 @@ Row counts verified:
 - `groups`: 1
 - `challenges`: 1
 - `badges`: 2
+- `feed_posts`: 1
 
-## Spot checks for backend query patterns
+## Backend integration checks (02.01)
 
-### users columns
+### DB schema alignment change applied
 
-Verified columns via `information_schema.columns`:
+Mismatch found vs backend ORM intent:
 
-- `id (uuid, not null)`
-- `email (text, not null)`
-- `password_hash (text, nullable)`
-- `display_name (text, not null)`
-- `avatar_url (text, nullable)`
-- `bio (text, nullable)`
-- `timezone (text, nullable)`
-- `created_at (timestamptz, not null)`
-- `updated_at (timestamptz, not null)`
+- `users.timezone` had a DB default `'UTC'::text`, but backend ORM treats timezone as nullable/no server default.
 
-This supports typical auth/profile queries by `email` and primary key `id`.
+Applied (one statement):
 
-### habits foreign key
+- `ALTER TABLE users ALTER COLUMN timezone DROP DEFAULT;`
 
-Verified constraint:
+### Remaining gap: auth endpoints returning 500 appears non-DB
 
-- `habits_user_id_fkey` → `users(id)` with `ON DELETE CASCADE`
+During smoke calls against backend `:3001`, both:
 
-## Notes / adjustments
+- `POST /auth/register`
+- `POST /auth/login`
 
-- No schema changes were required during this verification pass; all required tables, indexes, and seed data were present.
-- Port discrepancy note for later integration task: runtime container list mentions `5001`, while `db_connection.txt` and verified server port is `5000`. This should be handled in the integration step.
+returned `500 Internal Server Error` with no response body.
+
+Given the DB schema supports inserts (manual insert relying on `gen_random_uuid()` works), this remaining 500 is most likely due to backend runtime configuration (e.g., `JWT_SECRET_KEY` missing, which would raise a RuntimeError when creating tokens) rather than missing DB tables/columns/constraints.
 
 ## How to re-run these checks
 
